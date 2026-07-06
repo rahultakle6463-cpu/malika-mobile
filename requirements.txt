@@ -5,3 +5,4 @@ moviepy
 imageio-ffmpeg
 PyQt5
 google-genai
+opencv-python-headless
