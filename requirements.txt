@@ -4,4 +4,4 @@ Pillow
 moviepy
 imageio-ffmpeg
 PyQt5
-google-generativeai
+google-genai
