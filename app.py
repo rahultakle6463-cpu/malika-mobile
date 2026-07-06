@@ -258,13 +258,20 @@ with tab1:
                         
             # --- New Copy Transcript Button ---
             st.markdown("### 📋 1. Copy Tagged Transcript")
-            st.info("👆 Use the copy icon on the top right of this box to copy your entire tagged transcript. You can send this to ChatGPT or AI to generate your script manually!")
+            st.info("👆 Use the copy icon on the top right of this box to copy your entire tagged transcript, or click the download button below!")
             
             tagged_text_output = ""
             for item in st.session_state.transcript_data:
                 tagged_text_output += f"[{item['timestamp']}] {item['type'].upper()} || {item.get('speaker', '')} || {item.get('text', '')}\n"
             
             st.code(tagged_text_output, language="text")
+            
+            st.download_button(
+                label="💾 Download Transcript (.txt)",
+                data=tagged_text_output,
+                file_name=f"{selected_serial.replace(' ', '_')}_transcript.txt",
+                mime="text/plain"
+            )
             
             # --- Generate Script Button ---
             st.markdown("### ✨ 2. Generate AI Blockbuster Script")
@@ -288,8 +295,15 @@ with tab1:
     # --- Always Visible Final Script & Prompt Generator ---
     st.markdown("---")
     st.markdown("### 📝 Final Script & ChatGPT Prompt")
-    st.info("You can review the AI-generated script here, or PASTE an existing script directly to generate a prompt!")
+    st.info("You can review the AI-generated script here, or PASTE/UPLOAD an existing script directly to generate a prompt!")
     
+    uploaded_final_script = st.file_uploader("Upload Script File (.txt)", type=["txt"], key="final_script_upload")
+    if uploaded_final_script:
+        content = uploaded_final_script.getvalue().decode("utf-8")
+        if st.session_state.final_script != content:
+            st.session_state.final_script = content
+            st.rerun()
+            
     st.session_state.final_script = st.text_area("Final Script (Edit or Paste here)", st.session_state.final_script, height=400)
     
     st.markdown("#### 🤖 ChatGPT (DALL-E) Thumbnail Prompt Generator")
