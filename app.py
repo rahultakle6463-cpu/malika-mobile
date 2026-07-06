@@ -67,7 +67,7 @@ def save_characters(serial_name, char_list):
         pass
 
 # --- Tabs ---
-tab1, tab2, tab3 = st.tabs(["📝 1. Script Engine", "🎬 2. Video Maker (MP4)", "🖼️ 3. Thumbnail Maker"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 1. Script Engine", "🎬 2. Video Maker", "🖼️ 3. Thumbnail Maker", "📝 4. Script Editor", "🔊 5. ElevenLabs Tagger"])
 
 # ==========================================
 # TAB 1: SCRIPT ENGINE
@@ -313,9 +313,7 @@ with tab1:
                 st.info("Copy the prompt below and paste it into ChatGPT (along with 4 extracted frames) to generate an AI Thumbnail!")
                 st.code(chatgpt_prompt, language="text")
 
-# ==========================================
-# TAB 2: VIDEO MAKER (MP4)
-# ==========================================
+# --- TAB 2: MANUAL SYNC ---
 with tab2:
     st.header("2. MP4 Video Maker")
     st.markdown("Merge your Audio with Frames and Text Overlay. You can use Auto-Extracted frames or upload Manual frames.")
@@ -380,10 +378,6 @@ with tab2:
             """, unsafe_allow_html=True
         )
         
-        # 1. AUDIO PLAYER IS HANDLED BY st.audio AT THE TOP OF TAB 2! 
-        # But wait, the user wants the audio right above the frames.
-        # Actually, st.audio is rendered way up in the file (line 351). 
-        # We can move it or duplicate it here!
         if audio_upload:
             st.audio(audio_upload)
             
@@ -438,7 +432,6 @@ with tab2:
             try:
                 from PyQt5.QtGui import QImage, QPainter, QFont, QColor
                 from PyQt5.QtCore import Qt
-                from PIL import Image
                 
                 # 1. Generate overlay.png using PyQt5 (Perfect Devanagari Support)
                 overlay_path = os.path.join(temp_base, "preview_overlay.png")
@@ -472,7 +465,7 @@ with tab2:
                 
                 st.image(preview_combined, caption="Live Overlay Preview (Perfect Devanagari Render)", use_container_width=True)
             except Exception as e:
-                st.error(f"Preview failed: {e}")
+                st.error(f"Error checking status: {e}")
         else:
             st.warning("Extract or upload frames first to see the preview!")
     
@@ -579,3 +572,121 @@ with tab3:
                     st.image(thumb_out)
                     with open(thumb_out, "rb") as f:
                         st.download_button("💾 Download Thumbnail", f, file_name="thumbnail.jpg", mime="image/jpeg")
+
+# ==========================================
+# TAB 4: SCRIPT EDITOR
+# ==========================================
+with tab4:
+    st.header("4. Script Editor & Batch Splitter")
+    st.markdown("Edit your script here. When ready, split it into 1200-character batches for ElevenLabs!")
+    
+    # File uploader for quick import
+    uploaded_script = st.file_uploader("Optional: Upload a .txt script file", type=["txt"])
+    
+    if "raw_script" not in st.session_state:
+        st.session_state.raw_script = ""
+        
+    if uploaded_script:
+        content = uploaded_script.getvalue().decode("utf-8")
+        if st.session_state.raw_script != content:
+            st.session_state.raw_script = content
+            st.rerun()
+
+    # The massive text editor
+    script_input = st.text_area("Your Script", value=st.session_state.raw_script, height=400, placeholder="Paste or type your script here...")
+    st.session_state.raw_script = script_input
+    
+    if st.button("✂️ Split Script into Batches (Max 1200 chars)"):
+        if not script_input.strip():
+            st.warning("Please enter a script first.")
+        else:
+            st.success("Script split successfully! Click the 'Copy' icon in the top right of each batch box.")
+            
+            import re
+            batches = []
+            current_batch = ""
+            
+            paragraphs = re.split(r'(\n\n+)', script_input)
+            
+            for p in paragraphs:
+                if len(current_batch) + len(p) > 1200:
+                    if current_batch.strip():
+                        batches.append(current_batch.strip())
+                        current_batch = ""
+                    
+                    if len(p) > 1200:
+                        sentences = re.split(r'(?<=[.!?।])\s+', p)
+                        for s in sentences:
+                            if len(current_batch) + len(s) > 1200:
+                                if current_batch.strip():
+                                    batches.append(current_batch.strip())
+                                    current_batch = s + " "
+                                else:
+                                    batches.append(s)
+                                    current_batch = ""
+                            else:
+                                current_batch += s + " "
+                    else:
+                        current_batch += p
+                else:
+                    current_batch += p
+            
+            if current_batch.strip():
+                batches.append(current_batch.strip())
+            
+            for i, b in enumerate(batches):
+                st.markdown(f"**Batch {i+1} ({len(b)} chars)**")
+                st.code(b, language="text")
+
+# ==========================================
+# TAB 5: ELEVENLABS TAGGER
+# ==========================================
+with tab5:
+    st.header("5. ElevenLabs Emotion Tagger")
+    st.markdown("Automatically insert ElevenLabs emotion tags (like `[happy]`, `[sad]`) into your Marathi/Hindi script without changing the language!")
+    
+    tagger_models = [
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ]
+    selected_tagger_model = st.selectbox("Select Model", tagger_models, index=0, key="tagger_model")
+    
+    tagger_script = st.text_area("Script to Tag", height=300, placeholder="Paste your script here...", key="tagger_input")
+    
+    if st.button("🏷️ Generate Tagged Script"):
+        if not tagger_script.strip():
+            st.warning("Please enter a script to tag.")
+        elif not st.session_state.api_key:
+            st.error("Please configure Gemini API Key in the sidebar first.")
+        else:
+            with st.spinner("Tagging script..."):
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=st.session_state.api_key)
+                    
+                    system_prompt = """You are an expert director for daily soap serials. 
+Your job is to insert ElevenLabs emotion tags into the provided script.
+The script is in Marathi or Hindi. 
+Insert ENGLISH emotion tags (e.g., [happy], [sad], [angry], [crying], [suspense], [shocked], [romantic], [serious], [pleading], [excited], [calm], [teasing], [relieved], [affectionate]) at the beginning of sentences or paragraphs where the emotion changes.
+RULES:
+1. DO NOT translate the script. Keep the original language exactly as it is.
+2. ONLY insert the emotion tags in brackets.
+3. Return ONLY the tagged script, nothing else."""
+
+                    prompt = f"{system_prompt}\n\nHere is the script:\n\n{tagger_script}"
+                    
+                    response = client.models.generate_content(
+                        model=selected_tagger_model,
+                        contents=prompt
+                    )
+                    
+                    if response.text:
+                        st.success("Tagged successfully!")
+                        st.code(response.text, language="text")
+                    else:
+                        st.error("Failed to generate tags.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
