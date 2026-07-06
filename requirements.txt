@@ -1,3 +1,7 @@
 streamlit
-edge-tts
-asyncio
+pandas
+Pillow
+moviepy
+imageio-ffmpeg
+PyQt5
+google-generativeai

@@ -1,93 +1,581 @@
 import streamlit as st
-import edge_tts
-import asyncio
 import os
-import subprocess
-import uuid
+import shutil
+import glob
+import json
+import base64
+import streamlit.components.v1 as components
+from modules import gemini_client, v2_analyzer, frame_extractor, video_maker, thumbnail_generator
+from PIL import Image
 
-# Configuration
-VOICE = "mr-IN-AarohiNeural" # Marathi Female Voice (Azure Engine)
-BGM_FILE = "suspense_bgm.mp3" # Keep this in the same folder if you want BGM
+# --- Configuration ---
+st.set_page_config(page_title="Malika V2 Ultimate", page_icon="🚀", layout="wide")
+st.title("🚀 Malika V2 Ultimate Cloud Suite")
+st.markdown("Your entire YouTube automation studio, running 100% on the cloud.")
 
-def mix_bgm(voice_file, bgm_file, final_output):
-    if not os.path.exists(bgm_file):
-        # If no BGM uploaded, just return the voice file
-        return voice_file
-        
-    # Mix using FFmpeg
-    cmd = [
-        "ffmpeg", "-y", 
-        "-i", voice_file, 
-        "-stream_loop", "-1", "-i", bgm_file,
-        "-filter_complex", "[0:a]volume=1.0[a0];[1:a]volume=0.10[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2",
-        final_output
-    ]
+# --- Session State ---
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = ""
+if 'transcript_data' not in st.session_state:
+    st.session_state.transcript_data = []
+if 'frames_dir' not in st.session_state:
+    st.session_state.frames_dir = ""
+if 'final_script' not in st.session_state:
+    st.session_state.final_script = ""
+
+# Global settings
+st.sidebar.header("⚙️ Global Settings")
+api_key_input = st.sidebar.text_input("Gemini API Key", type="password", value=st.session_state.api_key)
+if api_key_input:
+    st.session_state.api_key = api_key_input
+    gemini_client.configure(st.session_state.api_key)
+
+selected_model = st.sidebar.selectbox("Gemini Model", [
+    "gemini-1.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite"
+])
+st.session_state.model_name = selected_model
+
+# Directories
+temp_base = "temp_cloud"
+os.makedirs(temp_base, exist_ok=True)
+shows_dir = "shows"
+os.makedirs(shows_dir, exist_ok=True)
+
+# Helper: Load characters
+def get_characters(serial_name):
+    char_file = os.path.join(shows_dir, serial_name, "characters.json")
+    if os.path.exists(char_file):
+        try:
+            with open(char_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict): return list(data.keys())
+                if isinstance(data, list): return data
+        except:
+            pass
+    return []
+
+def save_characters(serial_name, char_list):
+    char_file = os.path.join(shows_dir, serial_name, "characters.json")
+    os.makedirs(os.path.dirname(char_file), exist_ok=True)
     try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        return final_output
-    except Exception as e:
-        st.error(f"FFmpeg Error: {e}")
-        return voice_file # Fallback to unmixed audio
+        with open(char_file, "w", encoding="utf-8") as f:
+            json.dump(char_list, f, ensure_ascii=False, indent=4)
+    except:
+        pass
 
-async def generate_audio(text, output_filename):
-    communicate = edge_tts.Communicate(text, VOICE)
-    await communicate.save(output_filename)
+# --- Tabs ---
+tab1, tab2, tab3 = st.tabs(["📝 1. Script Engine", "🎬 2. Video Maker (MP4)", "🖼️ 3. Thumbnail Maker"])
 
-st.set_page_config(page_title="Malika v2 Cloud App", page_icon="📱")
+# ==========================================
+# TAB 1: SCRIPT ENGINE
+# ==========================================
+with tab1:
+    st.header("1. The Transcript & Script Engine")
+    
+    # 1. Shows Dropdown
+    existing_shows = [d for d in os.listdir(shows_dir) if os.path.isdir(os.path.join(shows_dir, d))]
+    selected_serial = st.selectbox("Select TV Show/Serial", ["Select Show...", "➕ Add New Serial..."] + existing_shows)
+    
+    if selected_serial == "➕ Add New Serial...":
+        new_serial_name = st.text_input("Enter New Serial Name:")
+        initial_chars = st.text_input("Enter Main Characters (comma separated):", placeholder="e.g. Sachin, Sayali, Arjun, Vimal")
+        if st.button("Create Serial"):
+            if new_serial_name.strip():
+                os.makedirs(os.path.join(shows_dir, new_serial_name.strip()), exist_ok=True)
+                if initial_chars.strip():
+                    char_list = [c.strip() for c in initial_chars.split(",") if c.strip()]
+                    save_characters(new_serial_name.strip(), char_list)
+                st.success(f"Serial '{new_serial_name}' created! Please refresh the page to select it.")
+                st.rerun()
+            else:
+                st.error("Name cannot be empty.")
+    
+    elif selected_serial != "Select Show...":
+        uploaded_vid = st.file_uploader("Upload Serial Episode (Max 800MB)", type=['mp4', 'avi', 'mov'])
+        
+        if st.button("Extract Transcript & Frames", key="btn_extract"):
+            if not uploaded_vid:
+                st.error("Please upload a video first!")
+            elif not st.session_state.api_key:
+                st.error("Please enter your Gemini API Key in the sidebar!")
+            else:
+                with st.status("🎬 Processing Episode (Smart Mode)...", expanded=True) as status_box:
+                    vid_path = os.path.join(temp_base, "episode.mp4")
+                    with open(vid_path, "wb") as f:
+                        f.write(uploaded_vid.getbuffer())
+                    
+                    frames_dir = os.path.join(temp_base, "frames")
+                    if os.path.exists(frames_dir):
+                        shutil.rmtree(frames_dir)
+                    os.makedirs(frames_dir, exist_ok=True)
+                    
+                    def log_cb(msg):
+                        status_box.write(f"🔄 {msg}")
+                    
+                    # 1. Create Lightweight Proxy (High Quality Audio)
+                    proxy_path = os.path.join(temp_base, "proxy_temp.mp4")
+                    status_box.write("⚙️ Creating 480p proxy with 128k High-Quality Audio for AI...")
+                    import subprocess
+                    proxy_cmd = [
+                        'ffmpeg', '-y', '-i', vid_path,
+                        '-vf', 'scale=-2:480',
+                        '-r', '2',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
+                        '-c:a', 'aac', '-b:a', '128k', # UPGRADED AUDIO BITRATE
+                        proxy_path
+                    ]
+                    try:
+                        subprocess.run(proxy_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                        upload_target = proxy_path
+                        status_box.write("✅ Proxy created successfully!")
+                    except Exception as e:
+                        status_box.write(f"⚠️ Proxy failed, using original video: {e}")
+                        upload_target = vid_path
+                        
+                    # 2. Upload and Transcribe (Native Continuation Loop)
+                    status_box.write("☁️ Uploading to Gemini...")
+                    video_file = gemini_client.upload_video_file(upload_target, progress_callback=log_cb)
+                    
+                    status_box.write(f"🧠 AI ({st.session_state.model_name}) is transcribing (using Smart Continuation Loop)...")
+                    full_transcript = v2_analyzer.generate_timestamp_transcript(
+                        video_file=video_file,
+                        serial_name=selected_serial,
+                        model_name=st.session_state.model_name,
+                        progress_callback=log_cb
+                    )
+                    
+                    # Clean up proxy
+                    try:
+                        if os.path.exists(proxy_path): os.remove(proxy_path)
+                    except:
+                        pass
+                            
+                    # 3. Process Full Transcript
+                    if full_transcript:
+                        status_box.write("🎞️ Extracting High-Quality frames from Original Video for detected scenes...")
+                        timestamps = list(set([item.get("timestamp", "00:00") for item in full_transcript]))
+                        frames_map = frame_extractor.extract_frames_for_timestamps(
+                            video_path=vid_path,
+                            timestamps=timestamps,
+                            output_dir=frames_dir,
+                            progress_callback=log_cb
+                        )
+                        st.session_state.frames_dir = frames_dir
+                        
+                        for item in full_transcript:
+                            ts = item.get("timestamp", "00:00")
+                            item["frame_img"] = frames_map.get(ts, None)
+                            item["user_tag"] = item.get("speaker", "")
+                            
+                        st.session_state.transcript_data = full_transcript
+                        status_box.update(label="✅ Processing Complete!", state="complete", expanded=False)
+                        st.success(f"Transcript Extracted ({len(full_transcript)} scenes)! High-Quality Frames matched! Review and Tag below.")
+                        
+                        # Prepare ZIP file in memory
+                        if os.path.exists(frames_dir):
+                            import zipfile
+                            import io
+                            mem_zip = io.BytesIO()
+                            with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                                for root, _, files in os.walk(frames_dir):
+                                    for file in files:
+                                        zf.write(os.path.join(root, file), arcname=file)
+                            mem_zip.seek(0)
+                            
+                            st.download_button(
+                                label="📦 Download All Frames (ZIP)",
+                                data=mem_zip,
+                                file_name="extracted_frames.zip",
+                                mime="application/zip",
+                                help="Download your frames now so you can use them later in Tab 2 if you close the app!"
+                            )
+                        st.rerun()
+                    else:
+                        status_box.update(label="❌ AI Failed to generate transcript", state="error", expanded=True)
 
-st.title("📱 Malika v2 (Zero-Cost Mobile Studio)")
-st.write("Welcome to your private YouTube Automation Studio. This runs 100% on the cloud.")
-
-# Serial Selection
-serial_name = st.selectbox("Select Serial Target:", ["Bai Tuza Ashirwad", "Lapandav", "Other"])
-
-# Script Input
-st.subheader("📝 Step 1: Paste Your Script")
-script_text = st.text_area("Paste your 10,000 characters script here:", height=250)
-
-# Optional BGM Upload
-st.subheader("🎵 Step 2: Background Music (Optional)")
-uploaded_bgm = st.file_uploader("Upload 'Suspense BGM' (MP3) - Optional", type=["mp3"])
-if uploaded_bgm:
-    with open(BGM_FILE, "wb") as f:
-        f.write(uploaded_bgm.getbuffer())
-    st.success("BGM Uploaded successfully!")
-
-# Generate Button
-if st.button("🚀 Step 3: Generate Final Audio"):
-    if not script_text.strip():
-        st.warning("Please paste a script first!")
-    else:
-        with st.spinner("Generating High-Quality AI Voice... Please wait..."):
-            # Unique filenames to avoid clash
-            raw_audio = f"voice_{uuid.uuid4().hex}.mp3"
-            final_audio = f"final_{uuid.uuid4().hex}.mp3"
+        # Tagging UI
+        if st.session_state.transcript_data:
+            st.markdown("### Review & Tag Characters")
+            current_chars = get_characters(selected_serial)
             
-            # 1. Generate Voice
-            asyncio.run(generate_audio(script_text, raw_audio))
+            with st.form("tagging_form"):
+                updated_transcript = []
+                
+                for i, item in enumerate(st.session_state.transcript_data):
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        if item.get("frame_img") and os.path.exists(item["frame_img"]):
+                            st.image(item["frame_img"], width=200, caption=item["timestamp"])
+                    with col2:
+                        st.markdown(f"**[{item['type'].upper()}]** {item['timestamp']} - *AI thinks: {item.get('speaker', '')}*")
+                        
+                        # Editable Text
+                        new_text = st.text_input("Transcript Text", value=item.get('text', ''), key=f"txt_{i}")
+                        
+                        # Smart Combo Box
+                        tag_options = current_chars + ["➕ Add New Character"]
+                        default_tag_idx = 0
+                        
+                        # Use .get() to prevent KeyError if user_tag is missing from old cached data
+                        if item.get("user_tag", "") in current_chars:
+                            default_tag_idx = current_chars.index(item["user_tag"])
+                            
+                        selected_tag = st.selectbox(f"Tag Character Name", tag_options, index=default_tag_idx, key=f"sel_{i}")
+                        
+                        final_tag = selected_tag
+                        if selected_tag == "➕ Add New Character":
+                            final_tag = st.text_input("Type New Character Name", key=f"new_tag_{i}")
+                            
+                        updated_transcript.append({
+                            "timestamp": item["timestamp"],
+                            "type": item["type"],
+                            "speaker": final_tag,
+                            "text": new_text,
+                            "frame_img": item["frame_img"],
+                            "context": item.get("context", "")
+                        })
+                
+                submit_tags = st.form_submit_button("💾 Save My Tags (Important: Click this to apply your selections!)")
+                
+                if submit_tags:
+                    st.session_state.transcript_data = updated_transcript
+                    # Update smart character list
+                    for item in updated_transcript:
+                        t = item["speaker"].strip()
+                        if t:
+                            if t in current_chars:
+                                current_chars.remove(t)
+                                current_chars.insert(0, t)
+                            else:
+                                current_chars.insert(0, t)
+                                
+                    save_characters(selected_serial, current_chars)
+                    st.success("✅ Tags Saved successfully! You can now Copy Transcript or Generate Script below.")
+                    st.rerun()
+                        
+            # --- New Copy Transcript Button ---
+            st.markdown("### 📋 1. Copy Tagged Transcript")
+            st.info("👆 Use the copy icon on the top right of this box to copy your entire tagged transcript. You can send this to ChatGPT or AI to generate your script manually!")
             
-            # 2. Mix BGM
-            with st.spinner("Mixing Suspense BGM using FFmpeg..."):
-                output_file = mix_bgm(raw_audio, BGM_FILE, final_audio)
+            tagged_text_output = ""
+            for item in st.session_state.transcript_data:
+                tagged_text_output += f"[{item['timestamp']}] {item['type'].upper()} || {item.get('speaker', '')} || {item.get('text', '')}\n"
             
-            st.success("✅ Final Audio Ready!")
+            st.code(tagged_text_output, language="text")
             
-            # Provide Audio Player
-            st.audio(output_file, format='audio/mp3')
+            # --- Generate Script Button ---
+            st.markdown("### ✨ 2. Generate AI Blockbuster Script")
+            st.info("Click below to automatically generate the YouTube Script using Gemini API.")
+            if st.button("🚀 Generate Script (using Gemini)"):
+                with st.spinner("Writing Blockbuster Script..."):
+                    final_script = v2_analyzer.generate_final_script(st.session_state.transcript_data, progress_callback=lambda x: None)
+                    st.session_state.final_script = final_script
+                    st.rerun()
             
-            # Provide Download Button
-            with open(output_file, "rb") as file:
-                st.download_button(
-                    label="💾 Download Final MP3 to Phone",
-                    data=file,
-                    file_name=f"{serial_name.replace(' ', '_')}_audio.mp3",
-                    mime="audio/mp3"
+            # --- Emergency Prompt View ---
+            with st.expander("🚨 View Emergency Prompt"):
+                st.markdown("If you want to generate the script manually externally, use this prompt:")
+                try:
+                    with open("emergency_prompt.txt", "r", encoding="utf-8") as f:
+                        em_prompt = f.read()
+                    st.code(em_prompt, language="text")
+                except:
+                    st.warning("Emergency prompt file not found.")
+                        
+    # --- Always Visible Final Script & Prompt Generator ---
+    st.markdown("---")
+    st.markdown("### 📝 Final Script & ChatGPT Prompt")
+    st.info("You can review the AI-generated script here, or PASTE an existing script directly to generate a prompt!")
+    
+    st.session_state.final_script = st.text_area("Final Script (Edit or Paste here)", st.session_state.final_script, height=400)
+    
+    st.markdown("#### 🤖 ChatGPT (DALL-E) Thumbnail Prompt Generator")
+    prompt_style = st.selectbox("Select Thumbnail Style", ["1. Classic Grid", "2. Movie Poster", "3. Panel Split"])
+    
+    if st.button("Generate ChatGPT Prompt", key="btn_chatgpt"):
+        if not st.session_state.final_script.strip():
+            st.warning("Please generate or paste a script first!")
+        elif not st.session_state.api_key:
+            st.error("Please enter your Gemini API Key in the sidebar!")
+        else:
+            with st.spinner("Generating Prompt..."):
+                style_idx = prompt_style.split(".")[0]
+                chatgpt_prompt = v2_analyzer.generate_thumbnail_prompt(
+                    script_text=st.session_state.final_script,
+                    style=style_idx,
+                    model_name=st.session_state.model_name,
+                    progress_callback=lambda x: None
                 )
+                st.success("Prompt Generated!")
+                st.info("Copy the prompt below and paste it into ChatGPT (along with 4 extracted frames) to generate an AI Thumbnail!")
+                st.code(chatgpt_prompt, language="text")
+
+# ==========================================
+# TAB 2: VIDEO MAKER (MP4)
+# ==========================================
+with tab2:
+    st.header("2. MP4 Video Maker")
+    st.markdown("Merge your Audio with Frames and Text Overlay. You can use Auto-Extracted frames or upload Manual frames.")
+    
+    audio_upload = st.file_uploader("Upload Voice Audio (MP3/WAV)", type=['mp3', 'wav'], key="aud")
+    
+    if audio_upload:
+        st.audio(audio_upload, format="audio/mp3")
+        
+    st.markdown("### Frames Source")
+    frame_source = st.radio("Choose Frames Source:", ["Use Extracted Frames (from Tab 1)", "Upload Frames ZIP File", "Upload Custom Frames Folder"])
+    
+    manual_frames_dir = os.path.join(temp_base, "manual_frames")
+    os.makedirs(manual_frames_dir, exist_ok=True)
+    
+    if frame_source == "Upload Frames ZIP File":
+        zip_upload = st.file_uploader("Upload Frames ZIP File", type=['zip'])
+        if zip_upload:
+            import zipfile
+            for f in glob.glob(os.path.join(manual_frames_dir, "*")):
+                try: os.remove(f)
+                except: pass
             
-            # Cleanup temp files
+            with zipfile.ZipFile(zip_upload, "r") as zf:
+                zf.extractall(manual_frames_dir)
+            st.success("Frames extracted from ZIP successfully!")
+            
+    elif frame_source == "Upload Custom Frames Folder":
+        manual_uploads = st.file_uploader("Upload All Frames from Folder", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
+        if manual_uploads:
+            for f in glob.glob(os.path.join(manual_frames_dir, "*")):
+                try: os.remove(f)
+                except: pass
+            for idx, mf in enumerate(manual_uploads):
+                save_path = os.path.join(manual_frames_dir, f"{idx:04d}_{mf.name}")
+                with open(save_path, "wb") as f:
+                    f.write(mf.getbuffer())
+            st.success(f"Uploaded {len(manual_uploads)} frames successfully!")
+            
+    active_frames_dir = manual_frames_dir if frame_source in ["Upload Frames ZIP File", "Upload Custom Frames Folder"] else st.session_state.frames_dir
+    
+    active_frame_files = []
+    if os.path.exists(active_frames_dir):
+        active_frame_files = sorted(glob.glob(os.path.join(active_frames_dir, "*.jpg")) + glob.glob(os.path.join(active_frames_dir, "*.png")))
+    
+    with st.expander("⏱️ Fast Desktop-Style Sync", expanded=True):
+        st.markdown("1. Play the **Audio Player** below (it stays at the top!).<br>2. Look at the **Horizontal Gallery** to find the frame number.<br>3. Type the time and frame number in the table at the bottom.", unsafe_allow_html=True)
+        
+        # Sticky Audio CSS
+        st.markdown(
+            """
+            <style>
+            [data-testid="stAudio"] {
+                position: sticky;
+                top: 0px;
+                z-index: 999;
+                background-color: #1e1e1e;
+                padding: 10px;
+                border-bottom: 2px solid #0dcaf0;
+            }
+            </style>
+            """, unsafe_allow_html=True
+        )
+        
+        # 1. AUDIO PLAYER IS HANDLED BY st.audio AT THE TOP OF TAB 2! 
+        # But wait, the user wants the audio right above the frames.
+        # Actually, st.audio is rendered way up in the file (line 351). 
+        # We can move it or duplicate it here!
+        if audio_upload:
+            st.audio(audio_upload)
+            
+        st.markdown("### 🖼️ Horizontal Frame Gallery (Scroll Left-Right)")
+        if active_frame_files:
+            def get_b64_thumb(path):
+                img = Image.open(path)
+                img.thumbnail((160, 90))
+                import io
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=60)
+                return base64.b64encode(buf.getvalue()).decode()
+
+            with st.spinner("Loading gallery..."):
+                gallery_html = "<div style='display:flex; overflow-x:auto; gap:10px; padding-bottom:10px; font-family:sans-serif; color:white;'>"
+                for idx, src in enumerate(active_frame_files):
+                    b64 = get_b64_thumb(src)
+                    gallery_html += f"<div style='text-align:center; min-width:160px; background:#333; padding:5px; border-radius:5px;'><img src='data:image/jpeg;base64,{b64}' style='width:100%; border-radius:3px;'><br><b>Frame {idx+1}</b></div>"
+                gallery_html += "</div>"
+            
+            components.html(gallery_html, height=180, scrolling=True)
+        else:
+            st.info("No frames available.")
+            
+        import pandas as pd
+        if "sync_blocks" not in st.session_state:
+            st.session_state.sync_blocks = pd.DataFrame([
+                {"End Time (e.g. 1.19 for 1m 19s)": "0.00", "End Frame Index": 1}
+            ])
+            
+        st.session_state.sync_blocks = st.data_editor(
+            st.session_state.sync_blocks,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.markdown("### Overlay / Banner Settings")
+    colA, colB = st.columns(2)
+    with colA:
+        left_txt = st.text_input("Left Top Text", "सौजन्य स्टार प्रवाह")
+        b_color = st.selectbox("Border/Outline Color", ["black", "blue", "red", "green", "white"])
+    with colB:
+        right_txt = st.text_input("Right Top Text", "25 जुन")
+        f_size = st.number_input("Text Size", min_value=20, max_value=150, value=50)
+        
+    contrast = st.number_input("Contrast (1.0 = normal)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
+    
+    # Live Preview Button
+    if st.button("👁️ Preview Banner on First Frame"):
+        if active_frame_files:
             try:
-                os.remove(raw_audio)
-                if output_file == final_audio:
-                    os.remove(final_audio)
-            except:
-                pass
+                from PyQt5.QtGui import QImage, QPainter, QFont, QColor
+                from PyQt5.QtCore import Qt
+                from PIL import Image
+                
+                # 1. Generate overlay.png using PyQt5 (Perfect Devanagari Support)
+                overlay_path = os.path.join(temp_base, "preview_overlay.png")
+                img_q = QImage(1920, 1080, QImage.Format_ARGB32)
+                img_q.fill(Qt.transparent)
+                
+                painter = QPainter(img_q)
+                font = QFont("Nirmala UI", int(f_size), QFont.Bold)
+                painter.setFont(font)
+                
+                def draw_outlined(x, y, text):
+                    base_y = int(y) + int(f_size * 1.2)
+                    painter.setPen(QColor(b_color))
+                    for dx in [-2, 0, 2]:
+                        for dy in [-2, 0, 2]:
+                            if dx != 0 or dy != 0: painter.drawText(int(x)+dx, base_y+dy, text)
+                    painter.setPen(QColor("white"))
+                    painter.drawText(int(x), base_y, text)
+                
+                if left_txt: draw_outlined(40, 40, left_txt)
+                if right_txt: draw_outlined(1920 - 400, 40, right_txt)
+                painter.end()
+                img_q.save(overlay_path)
+                
+                # 2. Composite with first frame using PIL for Streamlit display
+                base_img = Image.open(active_frame_files[0]).convert("RGBA")
+                base_img = base_img.resize((1920, 1080))
+                overlay_img = Image.open(overlay_path).convert("RGBA")
+                
+                preview_combined = Image.alpha_composite(base_img, overlay_img)
+                
+                st.image(preview_combined, caption="Live Overlay Preview (Perfect Devanagari Render)", use_container_width=True)
+            except Exception as e:
+                st.error(f"Preview failed: {e}")
+        else:
+            st.warning("Extract or upload frames first to see the preview!")
+    
+    if st.button("Generate MP4 Video", key="btn_vid"):
+        active_dir = manual_frames_dir if frame_source in ["Upload Frames ZIP File", "Upload Custom Frames Folder"] else st.session_state.frames_dir
+        
+        if not audio_upload:
+            st.error("Upload Audio first!")
+        elif not os.path.exists(active_dir) or len(glob.glob(os.path.join(active_dir, "*"))) == 0:
+            st.error("No frames available! Please upload frames or extract them in Tab 1.")
+        else:
+            with st.spinner("Rendering Final Video using FFmpeg (Please wait)..."):
+                aud_path = os.path.join(temp_base, "voice.mp3")
+                out_path = os.path.join(temp_base, "final_video.mp4")
+                with open(aud_path, "wb") as f:
+                    f.write(audio_upload.getbuffer())
+                    
+                try:
+                    # Convert DataFrame to manual_blocks list of dicts
+                    m_blocks = []
+                    if "sync_blocks" in st.session_state:
+                        for _, row in st.session_state.sync_blocks.iterrows():
+                            # Parse custom string format 1.19 or 1:19 or 79
+                            time_val = str(row.get("End Time (e.g. 1.19 for 1m 19s)", "0"))
+                            time_val = time_val.replace(":", ".")
+                            sec = 0.0
+                            
+                            if "." in time_val:
+                                parts = time_val.strip().split(".")
+                                if len(parts) == 2:
+                                    min_part = int(parts[0]) if parts[0].isdigit() else 0
+                                    sec_part = int(parts[1]) if parts[1].isdigit() else 0
+                                    sec = (min_part * 60) + sec_part
+                            else:
+                                try: sec = float(time_val)
+                                except: pass
+                                
+                            try:
+                                idx = int(row.get("End Frame Index", 0))
+                            except:
+                                idx = 0
+                                
+                            if sec > 0 and idx > 0:
+                                m_blocks.append({"end_seconds": sec, "end_frame_index": idx})
+                    
+                    video_maker.create_review_video(
+                        audio_path=aud_path,
+                        frames_dir=active_dir,
+                        output_path=out_path,
+                        left_text=left_txt,
+                        right_text=right_txt,
+                        border_color=b_color,
+                        font_size=f_size,
+                        manual_blocks=m_blocks if m_blocks else None,
+                        contrast_val=contrast
+                    )
+                    st.success("Video Rendered Successfully!")
+                    st.video(out_path)
+                    
+                    with open(out_path, "rb") as f:
+                        st.download_button("💾 Download Final MP4", f, file_name="final_video.mp4", mime="video/mp4")
+                except Exception as e:
+                    st.error(f"Video Generation Failed: {str(e)}")
+
+# ==========================================
+# TAB 3: THUMBNAIL MAKER
+# ==========================================
+with tab3:
+    st.header("3. Thumbnail Generator")
+    
+    st.markdown("Select 4 images to use for the thumbnail:")
+    active_dir2 = manual_frames_dir if os.path.exists(manual_frames_dir) and len(glob.glob(os.path.join(manual_frames_dir, "*"))) > 0 else st.session_state.frames_dir
+    
+    available_images = []
+    if os.path.exists(active_dir2):
+        available_images = sorted(glob.glob(os.path.join(active_dir2, "*.jpg")) + glob.glob(os.path.join(active_dir2, "*.png")))
+        
+    if not available_images:
+        st.info("Extract frames in Tab 1 or upload frames in Tab 2 to use them here.")
+    else:
+        # Multiselect for exactly 4 images
+        selected_images_paths = st.multiselect("Choose exactly 4 images", available_images, default=available_images[:4] if len(available_images)>=4 else available_images)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            top_banner = st.text_input("Top Text", placeholder="Top Banner Text (e.g. सायली आणि प्रतिमाचा...)")
+            bot_banner = st.text_input("Bottom Text", placeholder="Bottom Banner Text (e.g. आजच्या भागात मोठा ट्विस्ट...)")
+            date_badge = st.text_input("Date Badge (Optional)", placeholder="Date Badge (e.g. 23 जून)")
+        with col2:
+            d1 = st.text_input("Dialogue 1", placeholder="Dialogue 1")
+            d2 = st.text_input("Dialogue 2", placeholder="Dialogue 2")
+            d3 = st.text_input("Dialogue 3", placeholder="Dialogue 3")
+            d4 = st.text_input("Dialogue 4", placeholder="Dialogue 4")
+            
+        if st.button("Generate Thumbnail 🚀"):
+            if len(selected_images_paths) != 4:
+                st.error(f"Please select exactly 4 images! (You selected {len(selected_images_paths)})")
+            else:
+                with st.spinner("Generating Thumbnail..."):
+                    thumb_out = os.path.join(temp_base, "thumbnail.jpg")
+                    thumbnail_generator.generate_thumbnail(
+                        selected_images_paths, top_banner, bot_banner, [d1, d2, d3, d4], date_badge, thumb_out
+                    )
+                    st.image(thumb_out)
+                    with open(thumb_out, "rb") as f:
+                        st.download_button("💾 Download Thumbnail", f, file_name="thumbnail.jpg", mime="image/jpeg")
