@@ -201,6 +201,25 @@ with tab1:
             st.markdown("### Review & Tag Characters")
             current_chars = get_characters(selected_serial)
             
+            # 1. Dedicated Character Adder (Outside the form so it works instantly)
+            st.markdown("**Missing a character? Add them to the list:**")
+            col_add1, col_add2 = st.columns([3, 1])
+            with col_add1:
+                new_quick_char = st.text_input("New Character Name", key="quick_add_char", label_visibility="collapsed", placeholder="Type name here...")
+            with col_add2:
+                if st.button("➕ Add", use_container_width=True):
+                    if new_quick_char.strip() and new_quick_char.strip() not in current_chars:
+                        current_chars.insert(0, new_quick_char.strip())
+                        save_characters(selected_serial, current_chars)
+                        st.success(f"'{new_quick_char.strip()}' added!")
+                        st.rerun()
+            
+            # 2. Sort characters by frequency in current transcript so the most used is at the top!
+            from collections import Counter
+            counts = Counter([item.get("user_tag", item.get("speaker", "")) for item in st.session_state.transcript_data])
+            # Sort: highest count first. If count is same or 0, maintain alphabetical or existing order.
+            current_chars = sorted(current_chars, key=lambda x: counts.get(x, 0), reverse=True)
+            
             with st.form("tagging_form"):
                 updated_transcript = []
                 
@@ -213,26 +232,23 @@ with tab1:
                         st.markdown(f"**[{item['type'].upper()}]** {item['timestamp']} - *AI thinks: {item.get('speaker', '')}*")
                         
                         # Editable Text
-                        new_text = st.text_input("Transcript Text", value=item.get('text', ''), key=f"txt_{i}")
+                        new_text = st.text_area("Transcript Text", value=item.get('text', ''), key=f"txt_{i}", height=100)
                         
-                        # Smart Combo Box
-                        tag_options = current_chars + ["➕ Add New Character"]
+                        # Smart Combo Box (No conditional text input inside form to prevent UI locking)
+                        tag_options = current_chars if current_chars else ["Speaker 1"]
                         default_tag_idx = 0
                         
-                        # Use .get() to prevent KeyError if user_tag is missing from old cached data
-                        if item.get("user_tag", "") in current_chars:
-                            default_tag_idx = current_chars.index(item["user_tag"])
+                        # Determine default
+                        predicted_speaker = item.get("user_tag", item.get("speaker", ""))
+                        if predicted_speaker in tag_options:
+                            default_tag_idx = tag_options.index(predicted_speaker)
                             
                         selected_tag = st.selectbox(f"Tag Character Name", tag_options, index=default_tag_idx, key=f"sel_{i}")
-                        
-                        final_tag = selected_tag
-                        if selected_tag == "➕ Add New Character":
-                            final_tag = st.text_input("Type New Character Name", key=f"new_tag_{i}")
                             
                         updated_transcript.append({
                             "timestamp": item["timestamp"],
                             "type": item["type"],
-                            "speaker": final_tag,
+                            "speaker": selected_tag,
                             "text": new_text,
                             "frame_img": item["frame_img"],
                             "context": item.get("context", "")
@@ -241,18 +257,12 @@ with tab1:
                 submit_tags = st.form_submit_button("💾 Save My Tags (Important: Click this to apply your selections!)")
                 
                 if submit_tags:
+                    # Update session state with exact selections
+                    for i, item in enumerate(updated_transcript):
+                        item["user_tag"] = item["speaker"]
+                        
                     st.session_state.transcript_data = updated_transcript
-                    # Update smart character list
-                    for item in updated_transcript:
-                        t = item["speaker"].strip()
-                        if t:
-                            if t in current_chars:
-                                current_chars.remove(t)
-                                current_chars.insert(0, t)
-                            else:
-                                current_chars.insert(0, t)
-                                
-                    save_characters(selected_serial, current_chars)
+                    
                     st.success("✅ Tags Saved successfully! You can now Copy Transcript or Generate Script below.")
                     st.rerun()
                         
