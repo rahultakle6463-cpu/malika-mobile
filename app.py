@@ -201,20 +201,7 @@ with tab1:
             st.markdown("### Review & Tag Characters")
             current_chars = get_characters(selected_serial)
             
-            # 1. Dedicated Character Adder (Outside the form so it works instantly)
-            st.markdown("**Missing a character? Add them to the list:**")
-            col_add1, col_add2 = st.columns([3, 1])
-            with col_add1:
-                new_quick_char = st.text_input("New Character Name", key="quick_add_char", label_visibility="collapsed", placeholder="Type name here...")
-            with col_add2:
-                if st.button("➕ Add", use_container_width=True):
-                    if new_quick_char.strip() and new_quick_char.strip() not in current_chars:
-                        current_chars.insert(0, new_quick_char.strip())
-                        save_characters(selected_serial, current_chars)
-                        st.success(f"'{new_quick_char.strip()}' added!")
-                        st.rerun()
-            
-            # 2. Sort characters by frequency in current transcript so the most used is at the top!
+            # Sort characters by frequency in current transcript so the most used is at the top!
             from collections import Counter
             counts = Counter([item.get("user_tag", item.get("speaker", "")) for item in st.session_state.transcript_data])
             # Sort: highest count first. If count is same or 0, maintain alphabetical or existing order.
@@ -234,21 +221,25 @@ with tab1:
                         # Editable Text
                         new_text = st.text_area("Transcript Text", value=item.get('text', ''), key=f"txt_{i}", height=100)
                         
-                        # Smart Combo Box (No conditional text input inside form to prevent UI locking)
                         tag_options = current_chars if current_chars else ["Speaker 1"]
                         default_tag_idx = 0
-                        
-                        # Determine default
                         predicted_speaker = item.get("user_tag", item.get("speaker", ""))
                         if predicted_speaker in tag_options:
                             default_tag_idx = tag_options.index(predicted_speaker)
                             
-                        selected_tag = st.selectbox(f"Tag Character Name", tag_options, index=default_tag_idx, key=f"sel_{i}")
+                        # Simulate Editable Combobox for Streamlit Form
+                        col_t1, col_t2 = st.columns(2)
+                        with col_t1:
+                            selected_tag = st.selectbox(f"Select Character", tag_options, index=default_tag_idx, key=f"sel_{i}")
+                        with col_t2:
+                            custom_tag = st.text_input("Or Type New Name", placeholder="Leave empty to use selection", key=f"custom_{i}")
+                            
+                        final_tag = custom_tag.strip() if custom_tag.strip() else selected_tag
                             
                         updated_transcript.append({
                             "timestamp": item["timestamp"],
                             "type": item["type"],
-                            "speaker": selected_tag,
+                            "speaker": final_tag,
                             "text": new_text,
                             "frame_img": item["frame_img"],
                             "context": item.get("context", "")
@@ -261,6 +252,12 @@ with tab1:
                     for i, item in enumerate(updated_transcript):
                         item["user_tag"] = item["speaker"]
                         
+                        # Dynamically add new characters to the global list!
+                        t = item["speaker"].strip()
+                        if t and t not in current_chars:
+                            current_chars.insert(0, t)
+                            
+                    save_characters(selected_serial, current_chars)
                     st.session_state.transcript_data = updated_transcript
                     
                     st.success("✅ Tags Saved successfully! You can now Copy Transcript or Generate Script below.")
