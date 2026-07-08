@@ -185,25 +185,6 @@ with tab1:
                         st.session_state.transcript_data = full_transcript
                         status_box.update(label="✅ Processing Complete!", state="complete", expanded=False)
                         st.success(f"Transcript Extracted ({len(full_transcript)} scenes)! Review and Tag below.")
-                        
-                        # Prepare ZIP file in memory (only if video was uploaded and frames exist)
-                        if not is_audio_only and os.path.exists(frames_dir) and len(os.listdir(frames_dir)) > 0:
-                            import zipfile
-                            import io
-                            mem_zip = io.BytesIO()
-                            with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                                for root, _, files in os.walk(frames_dir):
-                                    for file in files:
-                                        zf.write(os.path.join(root, file), arcname=file)
-                            mem_zip.seek(0)
-                            
-                            st.download_button(
-                                label="📦 Download All Frames (ZIP)",
-                                data=mem_zip,
-                                file_name="extracted_frames.zip",
-                                mime="application/zip",
-                                help="Download your frames now so you can use them later in Tab 2 if you close the app!"
-                            )
                         st.rerun()
                     else:
                         status_box.update(label="❌ AI Failed to generate transcript", state="error", expanded=True)
@@ -312,6 +293,26 @@ with tab1:
                     st.success("✅ Tags Saved successfully! You can now Copy Transcript or Generate Script below.")
                     st.rerun()
                         
+            # --- ZIP Download ---
+            if "frames_dir" in st.session_state and os.path.exists(st.session_state.frames_dir) and len(os.listdir(st.session_state.frames_dir)) > 0:
+                import zipfile
+                import io
+                st.markdown("### 📦 0. Download Extracted Frames")
+                st.info("Download your frames now so you can upload them later in the Video Maker tab if you close the app!")
+                mem_zip = io.BytesIO()
+                with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for root, _, files in os.walk(st.session_state.frames_dir):
+                        for file in files:
+                            zf.write(os.path.join(root, file), arcname=file)
+                mem_zip.seek(0)
+                
+                st.download_button(
+                    label="📦 Download All Frames (ZIP)",
+                    data=mem_zip,
+                    file_name="extracted_frames.zip",
+                    mime="application/zip"
+                )
+                
             # --- New Copy Transcript Button ---
             st.markdown("### 📋 1. Copy Tagged Transcript")
             st.info("👆 Use the copy icon on the top right of this box to copy your entire tagged transcript, or click the download button below!")
