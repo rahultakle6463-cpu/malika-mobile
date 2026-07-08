@@ -211,6 +211,43 @@ with tab1:
         # Tagging UI
         if st.session_state.transcript_data:
             st.markdown("### Review & Tag Characters")
+            
+            # --- FLOATING LOCAL VIDEO PLAYER FOR MOBILE ---
+            floating_player_html = """
+            <div style="background: #222; padding: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); border-bottom: 2px solid #0dcaf0; text-align: center; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; font-family: sans-serif;">
+                <p style="color: #0dcaf0; margin: 0; font-size: 13px; font-weight: bold;">📱 Mobile Watch: Select 1GB Video (Plays Locally!)</p>
+                <input type="file" id="localVid" accept="video/*" style="width: 100%; color: white; margin: 5px 0; font-size: 13px;">
+                <video id="vidPlayer" controls style="width: 100%; height: 180px; display: none; margin: 0 auto; background: black;"></video>
+                <script>
+                    // Make the Streamlit iframe float on top of the whole page!
+                    var frame = window.frameElement;
+                    if (frame) {
+                        frame.style.position = 'fixed';
+                        frame.style.top = '0px';
+                        frame.style.left = '0px';
+                        frame.style.width = '100%';
+                        frame.style.height = '240px';
+                        frame.style.zIndex = '999999';
+                        frame.style.border = 'none';
+                        frame.style.background = '#222';
+                    }
+                    
+                    document.getElementById('localVid').addEventListener('change', function(e) {
+                        var file = e.target.files[0];
+                        if (file) {
+                            var url = URL.createObjectURL(file);
+                            var vid = document.getElementById('vidPlayer');
+                            vid.src = url;
+                            vid.style.display = 'block';
+                            this.style.display = 'none'; // Hide input to give more room for video
+                        }
+                    });
+                </script>
+            </div>
+            """
+            components.html(floating_player_html, height=240)
+            st.markdown("<div style='height: 250px;'></div>", unsafe_allow_html=True) # Spacer so UI isn't hidden
+            
             current_chars = get_characters(selected_serial)
             
             # Sort characters by frequency in current transcript so the most used is at the top!
