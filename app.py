@@ -67,7 +67,7 @@ def save_characters(serial_name, char_list):
         pass
 
 # --- Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 1. Script Engine", "🎬 2. Video Maker", "🖼️ 3. Thumbnail Maker", "📝 4. Script Editor", "🔊 5. ElevenLabs Tagger"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📝 1. Script Engine", "🎬 2. Video Maker", "🖼️ 3. Thumbnail Maker", "📝 4. Script Editor", "🔊 5. ElevenLabs Tagger", "📱 6. Mobile Hub"])
 
 # ==========================================
 # TAB 1: SCRIPT ENGINE
@@ -322,12 +322,32 @@ with tab1:
             
             st.code(tagged_text_output, language="text")
             
-            st.download_button(
-                label="💾 Download Transcript (.txt)",
-                data=tagged_text_output,
-                file_name=f"{selected_serial.replace(' ', '_')}_transcript.txt",
-                mime="text/plain"
-            )
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.download_button(
+                    label="💾 Download Transcript (.txt)",
+                    data=tagged_text_output.encode('utf-8-sig'),
+                    file_name=f"{selected_serial.replace(' ', '_')}_transcript.txt",
+                    mime="text/plain"
+                )
+            
+            with col_d2:
+                html_transcript = f"""
+                <html>
+                <head><meta charset="utf-8"><title>Transcript</title></head>
+                <body style="font-family: sans-serif; padding: 20px;">
+                    <h3>Tagged Transcript</h3>
+                    <button onclick="navigator.clipboard.writeText(document.getElementById('content').innerText); alert('Copied!');" style="padding: 10px; background: #0dcaf0; color: black; border: none; font-weight: bold; margin-bottom: 10px;">📋 Copy Transcript</button>
+                    <pre id="content" style="white-space: pre-wrap; background: #f8f9fa; padding: 15px; border: 1px solid #ddd; color: black;">{tagged_text_output}</pre>
+                </body>
+                </html>
+                """
+                st.download_button(
+                    label="🌐 Download Transcript (.html)",
+                    data=html_transcript,
+                    file_name=f"{selected_serial.replace(' ', '_')}_transcript.html",
+                    mime="text/html"
+                )
             
             # --- Generate Script Button ---
             st.markdown("### ✨ 2. Generate AI Blockbuster Script")
@@ -353,9 +373,14 @@ with tab1:
     st.markdown("### 📝 Final Script & ChatGPT Prompt")
     st.info("You can review the AI-generated script here, or PASTE/UPLOAD an existing script directly to generate a prompt!")
     
-    uploaded_final_script = st.file_uploader("Upload Script File (.txt)", type=["txt"], key="final_script_upload")
+    uploaded_final_script = st.file_uploader("Upload Script File (.txt, .html)", type=["txt", "html"], key="final_script_upload")
     if uploaded_final_script:
         content = uploaded_final_script.getvalue().decode("utf-8")
+        if uploaded_final_script.name.endswith(".html") and '<pre id="content"' in content:
+            try:
+                content = content.split('<pre id="content"')[1].split('>', 1)[1].split('</pre>')[0]
+            except:
+                pass
         if st.session_state.final_script != content:
             st.session_state.final_script = content
             st.rerun()
@@ -651,13 +676,19 @@ with tab4:
     st.markdown("Edit your script here. When ready, split it into 1200-character batches for ElevenLabs!")
     
     # File uploader for quick import
-    uploaded_script = st.file_uploader("Optional: Upload a .txt script file", type=["txt"])
+    uploaded_script = st.file_uploader("Optional: Upload a .txt or .html script file", type=["txt", "html"])
     
     if "raw_script" not in st.session_state:
         st.session_state.raw_script = ""
         
     if uploaded_script:
         content = uploaded_script.getvalue().decode("utf-8")
+        if uploaded_script.name.endswith(".html") and '<pre id="content"' in content:
+            try:
+                content = content.split('<pre id="content"')[1].split('>', 1)[1].split('</pre>')[0]
+            except:
+                pass
+                
         if st.session_state.raw_script != content:
             st.session_state.raw_script = content
             st.rerun()
@@ -760,3 +791,45 @@ RULES:
                         st.error("Failed to generate tags.")
                 except Exception as e:
                     st.error(f"Error: {e}")
+
+# ==========================================
+# TAB 6: MOBILE HUB (GEMINI ASSISTANT)
+# ==========================================
+with tab6:
+    st.header("📱 Mobile Hub (For Gemini Transfer)")
+    st.markdown("Use this tab on Mobile 2 to quickly copy the prompt, and paste/download the Gemini output!")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("1. Copy Emergency Prompt")
+        try:
+            with open("emergency_prompt.txt", "r", encoding="utf-8") as f:
+                em_prompt = f.read()
+            st.code(em_prompt, language="text")
+        except:
+            st.warning("Emergency prompt file not found.")
+            
+    with col2:
+        st.subheader("2. Paste Gemini Script")
+        gemini_result = st.text_area("Paste the Marathi script generated by Gemini here:", height=300)
+        
+        if gemini_result.strip():
+            html_script = f"""
+            <html>
+            <head><meta charset="utf-8"><title>Gemini Script</title></head>
+            <body style="font-family: sans-serif; padding: 20px;">
+                <h3>Gemini Script</h3>
+                <button onclick="navigator.clipboard.writeText(document.getElementById('content').innerText); alert('Copied!');" style="padding: 10px; background: #0dcaf0; color: black; border: none; font-weight: bold; margin-bottom: 10px;">📋 Copy Script</button>
+                <pre id="content" style="white-space: pre-wrap; background: #f8f9fa; padding: 15px; border: 1px solid #ddd; color: black;">{gemini_result}</pre>
+            </body>
+            </html>
+            """
+            
+            st.download_button(
+                label="🌐 Download Gemini Script (.html)",
+                data=html_script,
+                file_name="gemini_final_script.html",
+                mime="text/html"
+            )
+
