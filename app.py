@@ -94,16 +94,18 @@ with tab1:
                 st.error("Name cannot be empty.")
     
     elif selected_serial != "Select Show...":
-        uploaded_vid = st.file_uploader("Upload Serial Episode (Max 800MB)", type=['mp4', 'avi', 'mov'])
+        uploaded_vid = st.file_uploader("Upload Serial Episode (Video or Audio)", type=['mp4', 'avi', 'mov', 'mp3', 'wav', 'm4a'])
         
         if st.button("Extract Transcript & Frames", key="btn_extract"):
             if not uploaded_vid:
-                st.error("Please upload a video first!")
+                st.error("Please upload a video or audio file first!")
             elif not st.session_state.api_key:
                 st.error("Please enter your Gemini API Key in the sidebar!")
             else:
                 with st.status("🎬 Processing Episode (Smart Mode)...", expanded=True) as status_box:
-                    vid_path = os.path.join(temp_base, "episode.mp4")
+                    is_audio_only = uploaded_vid.name.lower().endswith(('.mp3', '.wav', '.m4a'))
+                    
+                    vid_path = os.path.join(temp_base, "episode.mp4" if not is_audio_only else uploaded_vid.name)
                     with open(vid_path, "wb") as f:
                         f.write(uploaded_vid.getbuffer())
                     
@@ -115,24 +117,28 @@ with tab1:
                     def log_cb(msg):
                         status_box.write(f"🔄 {msg}")
                     
-                    # 1. Create Lightweight Proxy (High Quality Audio)
-                    proxy_path = os.path.join(temp_base, "proxy_temp.mp4")
-                    status_box.write("⚙️ Creating 480p proxy with 128k High-Quality Audio for AI...")
-                    import subprocess
-                    proxy_cmd = [
-                        'ffmpeg', '-y', '-i', vid_path,
-                        '-vf', 'scale=-2:480',
-                        '-r', '2',
-                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
-                        '-c:a', 'aac', '-b:a', '128k', # UPGRADED AUDIO BITRATE
-                        proxy_path
-                    ]
-                    try:
-                        subprocess.run(proxy_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                        upload_target = proxy_path
-                        status_box.write("✅ Proxy created successfully!")
-                    except Exception as e:
-                        status_box.write(f"⚠️ Proxy failed, using original video: {e}")
+                    if not is_audio_only:
+                        # 1. Create Lightweight Proxy (High Quality Audio)
+                        proxy_path = os.path.join(temp_base, "proxy_temp.mp4")
+                        status_box.write("⚙️ Creating 480p proxy with 128k High-Quality Audio for AI...")
+                        import subprocess
+                        proxy_cmd = [
+                            'ffmpeg', '-y', '-i', vid_path,
+                            '-vf', 'scale=-2:480',
+                            '-r', '2',
+                            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
+                            '-c:a', 'aac', '-b:a', '128k', # UPGRADED AUDIO BITRATE
+                            proxy_path
+                        ]
+                        try:
+                            subprocess.run(proxy_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                            upload_target = proxy_path
+                            status_box.write("✅ Proxy created successfully!")
+                        except Exception as e:
+                            status_box.write(f"⚠️ Proxy failed, using original video: {e}")
+                            upload_target = vid_path
+                    else:
+                        status_box.write("🔊 Audio file detected! Skipping video proxy creation...")
                         upload_target = vid_path
                         
                     # 2. Upload and Transcribe (Native Continuation Loop)
@@ -155,27 +161,33 @@ with tab1:
                             
                     # 3. Process Full Transcript
                     if full_transcript:
-                        status_box.write("🎞️ Extracting High-Quality frames from Original Video for detected scenes...")
-                        timestamps = list(set([item.get("timestamp", "00:00") for item in full_transcript]))
-                        frames_map = frame_extractor.extract_frames_for_timestamps(
-                            video_path=vid_path,
-                            timestamps=timestamps,
-                            output_dir=frames_dir,
-                            progress_callback=log_cb
-                        )
-                        st.session_state.frames_dir = frames_dir
-                        
-                        for item in full_transcript:
-                            ts = item.get("timestamp", "00:00")
-                            item["frame_img"] = frames_map.get(ts, None)
-                            item["user_tag"] = item.get("speaker", "")
+                        if not is_audio_only:
+                            status_box.write("🎞️ Extracting High-Quality frames from Original Video for detected scenes...")
+                            timestamps = list(set([item.get("timestamp", "00:00") for item in full_transcript]))
+                            frames_map = frame_extractor.extract_frames_for_timestamps(
+                                video_path=vid_path,
+                                timestamps=timestamps,
+                                output_dir=frames_dir,
+                                progress_callback=log_cb
+                            )
+                            st.session_state.frames_dir = frames_dir
                             
+                            for item in full_transcript:
+                                ts = item.get("timestamp", "00:00")
+                                item["frame_img"] = frames_map.get(ts, None)
+                                item["user_tag"] = item.get("speaker", "")
+                        else:
+                            status_box.write("🔊 Audio mode: Skipping frame extraction...")
+                            for item in full_transcript:
+                                item["frame_img"] = None
+                                item["user_tag"] = item.get("speaker", "")
+                                
                         st.session_state.transcript_data = full_transcript
                         status_box.update(label="✅ Processing Complete!", state="complete", expanded=False)
-                        st.success(f"Transcript Extracted ({len(full_transcript)} scenes)! High-Quality Frames matched! Review and Tag below.")
+                        st.success(f"Transcript Extracted ({len(full_transcript)} scenes)! Review and Tag below.")
                         
-                        # Prepare ZIP file in memory
-                        if os.path.exists(frames_dir):
+                        # Prepare ZIP file in memory (only if video was uploaded and frames exist)
+                        if not is_audio_only and os.path.exists(frames_dir) and len(os.listdir(frames_dir)) > 0:
                             import zipfile
                             import io
                             mem_zip = io.BytesIO()
