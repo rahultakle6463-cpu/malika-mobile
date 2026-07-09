@@ -303,7 +303,7 @@ with tab1:
                         # Simulate Editable Combobox for Streamlit Form
                         col_t1, col_t2 = st.columns(2)
                         with col_t1:
-                            selected_tag = st.radio(f"Select Character", tag_options, index=default_tag_idx, key=f"sel_{i}", horizontal=True)
+                            selected_tag = st.selectbox(f"Select Character", tag_options, index=default_tag_idx, key=f"sel_{i}")
                         with col_t2:
                             custom_tag = st.text_input("Or Type New Name", placeholder="Leave empty to use selection", key=f"custom_{i}")
                             
@@ -319,6 +319,24 @@ with tab1:
                         })
                 
                 submit_tags = st.form_submit_button("💾 Save My Tags (Important: Click this to apply your selections!)")
+                
+                # --- Anti-Keyboard Script for Mobile Selectboxes ---
+                components.html(
+                    """
+                    <script>
+                        setInterval(() => {
+                            var selects = window.parent.document.querySelectorAll('div[data-baseweb="select"] input');
+                            selects.forEach(el => {
+                                if (el.getAttribute('inputmode') !== 'none') {
+                                    el.setAttribute('inputmode', 'none');
+                                    el.setAttribute('readonly', 'true');
+                                }
+                            });
+                        }, 1000);
+                    </script>
+                    """,
+                    height=0
+                )
                 
                 if submit_tags:
                     # Update session state with exact selections
