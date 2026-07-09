@@ -23,6 +23,36 @@ if 'frames_dir' not in st.session_state:
 if 'final_script' not in st.session_state:
     st.session_state.final_script = ""
 
+# --- Auto-Save Logic ---
+AUTOSAVE_FILE = "autosave.json"
+
+def load_autosave():
+    if os.path.exists(AUTOSAVE_FILE):
+        try:
+            with open(AUTOSAVE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if 'transcript_data' in data and data['transcript_data']:
+                    st.session_state.transcript_data = data['transcript_data']
+                    st.session_state.frames_dir = data.get('frames_dir', '')
+                    st.session_state.final_script = data.get('final_script', '')
+                    return True
+        except Exception:
+            pass
+    return False
+
+def autosave_session():
+    data = {
+        'transcript_data': st.session_state.get('transcript_data', []),
+        'frames_dir': st.session_state.get('frames_dir', ''),
+        'final_script': st.session_state.get('final_script', '')
+    }
+    with open(AUTOSAVE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+if not st.session_state.transcript_data:
+    if load_autosave():
+        st.toast("🔄 Restored previous session automatically!")
+
 # Global settings
 st.sidebar.header("⚙️ Global Settings")
 api_key_input = st.sidebar.text_input("Gemini API Key", type="password", value=st.session_state.api_key)
@@ -183,6 +213,7 @@ with tab1:
                                 item["user_tag"] = item.get("speaker", "")
                                 
                         st.session_state.transcript_data = full_transcript
+                        autosave_session()
                         status_box.update(label="✅ Processing Complete!", state="complete", expanded=False)
                         st.success(f"Transcript Extracted ({len(full_transcript)} scenes)! Review and Tag below.")
                         st.rerun()
@@ -195,9 +226,10 @@ with tab1:
             
             # --- FLOATING LOCAL VIDEO PLAYER FOR MOBILE ---
             floating_player_html = """
-            <div style="background: #222; padding: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); border-bottom: 2px solid #0dcaf0; text-align: center; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; font-family: sans-serif;">
+            <div style="background: #222; padding: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); border-bottom: 2px solid #0dcaf0; text-align: center; width: 100%; height: 100%; box-sizing: border-box; overflow: hidden; font-family: sans-serif; position: relative;">
                 <p style="color: #0dcaf0; margin: 0; font-size: 13px; font-weight: bold;">📱 Mobile Watch: Select 1GB Video (Plays Locally!)</p>
                 <input type="file" id="localVid" accept="video/*" style="width: 100%; color: white; margin: 5px 0; font-size: 13px;">
+                <button id="resetVid" style="display: none; position: absolute; top: 5px; right: 5px; background: #dc3545; color: white; border: none; border-radius: 3px; padding: 2px 5px; font-size: 10px; cursor: pointer;">🔄 Reset Video</button>
                 <video id="vidPlayer" controls style="width: 100%; height: 180px; display: none; margin: 0 auto; background: black;"></video>
                 <script>
                     // Make the Streamlit iframe float on top of the whole page!
@@ -221,7 +253,18 @@ with tab1:
                             vid.src = url;
                             vid.style.display = 'block';
                             this.style.display = 'none'; // Hide input to give more room for video
+                            document.getElementById('resetVid').style.display = 'block';
                         }
+                    });
+                    document.getElementById('resetVid').addEventListener('click', function() {
+                        var vid = document.getElementById('vidPlayer');
+                        vid.pause();
+                        vid.removeAttribute('src');
+                        vid.load();
+                        vid.style.display = 'none';
+                        this.style.display = 'none';
+                        document.getElementById('localVid').value = '';
+                        document.getElementById('localVid').style.display = 'block';
                     });
                 </script>
             </div>
@@ -260,7 +303,7 @@ with tab1:
                         # Simulate Editable Combobox for Streamlit Form
                         col_t1, col_t2 = st.columns(2)
                         with col_t1:
-                            selected_tag = st.selectbox(f"Select Character", tag_options, index=default_tag_idx, key=f"sel_{i}")
+                            selected_tag = st.radio(f"Select Character", tag_options, index=default_tag_idx, key=f"sel_{i}", horizontal=True)
                         with col_t2:
                             custom_tag = st.text_input("Or Type New Name", placeholder="Leave empty to use selection", key=f"custom_{i}")
                             
@@ -289,6 +332,7 @@ with tab1:
                             
                     save_characters(selected_serial, current_chars)
                     st.session_state.transcript_data = updated_transcript
+                    autosave_session()
                     
                     st.success("✅ Tags Saved successfully! You can now Copy Transcript or Generate Script below.")
                     st.rerun()
